@@ -108,4 +108,4 @@ app.post('/api/chat', async (req, res) => {
 // ===== START SERVER =====
 httpServer.listen(PORT, () => {
   console.log(`✅ VoidGhost Backend jalan di port ${PORT}`);
-});
+}); 
