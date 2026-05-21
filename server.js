@@ -35,6 +35,10 @@ io.on('connection', (socket) => {
       id: Date.now(),
       username: 'SYSTEM',
       message: `${onlineUsers[socket.id]} bergabung 👻`,
+const USERS = [
+  { username: 'admin', password: 'admin123', role: 'OWNER' },
+  { username: 'namauser', password: 'passwordnya', role: 'MEMBER' },
+];
       time: new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}),
       isSystem: true
     });
