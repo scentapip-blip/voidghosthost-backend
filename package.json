@@ -1,15 +1,170 @@
-{
-  "name": "voidghost-backend",
-  "version": "1.0.0",
-  "type": "module",
-  "description": "VoidGhost V1 Backend — API + Realtime Chat",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "socket.io": "^4.7.2"
+import express from 'express';
+import cors from 'cors';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+
+const app = express();
+const httpServer = createServer(app);
+const PORT = process.env.PORT || 3000;
+const GROQ_KEY = process.env.GROQ_API_KEY;
+
+// ===== MIDDLEWARE =====
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+
+// ===== USERS (simpan di memory, bisa ganti ke database nanti) =====
+// Format: { username, password, role }
+const USERS = [
+  { username: 'admin', password: 'admin123', role: 'OWNER' },
+  { username: 'user1', password: 'pass123', role: 'MEMBER' },
+  { username: 'voidghost', password: 'voidghost', role: 'MEMBER' },
+  // Tambah user baru di sini
+];
+
+// ===== CHAT MEMORY (max 50 pesan) =====
+let chatHistory = [];
+let onlineUsers = {};
+
+// ===== SOCKET.IO — PUBLIC CHAT REALTIME =====
+const io = new Server(httpServer, {
+  cors: { origin: '*', methods: ['GET', 'POST'] }
+});
+
+io.on('connection', (socket) => {
+  console.log('User connect:', socket.id);
+
+  // Kirim history chat ke user baru
+  socket.emit('chat:history', chatHistory);
+
+  // User join room
+  socket.on('user:join', (username) => {
+    onlineUsers[socket.id] = username || 'GHOST';
+    // Broadcast jumlah online ke semua
+    io.emit('user:online', Object.keys(onlineUsers).length);
+    // Broadcast notif join
+    io.emit('chat:message', {
+      id: Date.now(),
+      username: 'SYSTEM',
+      message: `${onlineUsers[socket.id]} bergabung ke room 👻`,
+      time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+      isSystem: true
+    });
+  });
+
+  // Terima pesan dari user & broadcast ke semua
+  socket.on('chat:send', (data) => {
+    if (!data.message || !data.message.trim()) return;
+    const msg = {
+      id: Date.now(),
+      username: onlineUsers[socket.id] || 'GHOST',
+      message: data.message.trim().slice(0, 500), // max 500 karakter
+      time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+      isSystem: false
+    };
+    chatHistory.push(msg);
+    if (chatHistory.length > 50) chatHistory.shift(); // hapus pesan paling lama
+    io.emit('chat:message', msg); // kirim ke SEMUA user yang connect
+  });
+
+  // User disconnect
+  socket.on('disconnect', () => {
+    const username = onlineUsers[socket.id];
+    delete onlineUsers[socket.id];
+    io.emit('user:online', Object.keys(onlineUsers).length);
+    if (username) {
+      io.emit('chat:message', {
+        id: Date.now(),
+        username: 'SYSTEM',
+        message: `${username} keluar dari room`,
+        time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+        isSystem: true
+      });
+    }
+  });
+});
+
+// ===== API: STATUS =====
+app.get('/', (req, res) => {
+  res.json({
+    status: 'online',
+    app: 'VoidGhost Backend 👻',
+    version: '1.0.0',
+    online: Object.keys(onlineUsers).length,
+    endpoints: ['/api/test', '/api/login', '/api/chat']
+  });
+});
+
+app.get('/api/test', (req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'VoidGhost Backend Online 👻',
+    time: new Date().toISOString(),
+    online: Object.keys(onlineUsers).length
+  });
+});
+
+// ===== API: LOGIN =====
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ success: false, message: 'Username & password wajib diisi!' });
   }
-}
+
+  const user = USERS.find(
+    u => u.username.toLowerCase() === username.toLowerCase() && u.password === password
+  );
+
+  if (user) {
+    res.json({
+      success: true,
+      username: user.username,
+      role: user.role,
+      token: Buffer.from(`${user.username}:${Date.now()}`).toString('base64') // simple token
+    });
+  } else {
+    res.status(401).json({ success: false, message: 'Username atau password salah!' });
+  }
+});
+
+// ===== API: GROQ AI (proxy - API key aman di server) =====
+app.post('/api/chat', async (req, res) => {
+  const { messages } = req.body;
+  if (!messages || !Array.isArray(messages)) {
+    return res.status(400).json({ error: 'messages array required' });
+  }
+
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROQ_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'llama3-8b-8192',
+        messages,
+        max_tokens: 800,
+        temperature: 0.75
+      })
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: 'Groq API error', detail: err.message });
+  }
+});
+
+// ===== API: ONLINE USERS =====
+app.get('/api/online', (req, res) => {
+  res.json({
+    count: Object.keys(onlineUsers).length,
+    users: Object.values(onlineUsers)
+  });
+});
+
+// ===== START SERVER =====
+httpServer.listen(PORT, () => {
+  console.log(`✅ VoidGhost Backend jalan di port ${PORT}`);
+  console.log(`📡 Socket.io realtime chat aktif`);
+  console.log(`🤖 Groq AI proxy aktif`);
+});
